@@ -1,0 +1,225 @@
+#Code for analyses in Duxbury et al. 2023 manuscript enititled "Reduced insulin/IGF-1 signalling upregulates two anti-viral immune pathways, decreases viral load and increases survival under viral infection in C. elegans"
+
+##Age-specific survival analyses
+###Load in packages
+library(survival)
+library(bbmle) ##for AICtab
+library(coxme)
+###Set working directory and load in data
+
+###Combined survival analysis for matricide censored
+scm1<-coxme(Surv(Age.at.death,Status)~Virus.inf*Strain+(1|NewPlateId)+(1|Block),data=JUcombosurv) 
+summary(scm1)
+scm2<-coxme(Surv(Age.at.death,Status)~Virus.inf+Strain+(1|NewPlateId)+(1|Block),data=JUcombosurv)
+summary(scm2)
+anova(scm1,scm2) ##there was a significant reduction in explanatory power by removing the interaction, so keep it in
+AICtab(scm1,scm2) 
+
+##since there was a significant virus x strain interaction, subset by Strain or by Virus.inf and analysing the pairwise comparisons
+##subset by virus
+viruscombo<-subset(JUcombosurv,Virus.inf=="1")
+summary(viruscombo) 
+noviruscombo<-subset(JUcombosurv,Virus.inf=="0")
+##subset by strain
+evcombo<-subset(JUcombosurv,Strain=="ev")
+summary(evcombo)
+dafcombo<-subset(JUcombosurv,Strain=="daf-2")
+
+##now test the effect of strain in virus and no-virus data
+scm3<-coxme(Surv(Age.at.death,Status)~Strain+(1|NewPlateId)+(1|Block),data=viruscombo)
+summary(scm3)
+scm4<-coxme(Surv(Age.at.death,Status)~Strain+(1|NewPlateId)+(1|Block),data=noviruscombo)
+summary(scm4)
+
+###Analysing the data with matricide treated as dead
+scm11<-coxme(Surv(Age.at.death,Status)~Virus.inf*Strain+(1|NewPlateId)+(1|Block),data=JUcombosurvmatri) 
+
+#####################
+#####################
+
+###Age-specific mortality analysis using BaSTA
+
+##load in packages
+library(devtools)
+install_github("fercol/BaSTA/pkg")
+library(BaSTA) #we use the multibasta function to run multiple BaSTA models on the same data set, perform model comparison and visualise the results of the multiple runs
+library(snowfall) ##this allows us to run multiple BaSTA simulations in parallel
+library(dplyr)
+library(tidyverse)
+library(ggthemes)
+library(ggplot2)
+library(patchwork)
+
+##set working directory and load in data
+
+##check data
+newdata2<-DataCheck(dfnew, studyStart = 1, studyEnd = max(dfnew$death)) ##no problems were detected with the data
+
+##Run multi version of BaSTA on the data
+out <- multibasta(dfnew, studyStart = 1, studyEnd = max(dfnew$death), models = c("GO", "WE", "LO", "EX"), shapes = c("simple", "Makeham", "bathtub"), updateJumps = TRUE, parallel = TRUE, ncpus = 8, nsim = 4, niter = 150000, burnin = 15001, thinning = 150)
+##all ran fine and all ten models converged
+
+##Print results
+summary(out, digits = 3)
+
+##load gt package for displaying tables
+library(gt)
+gt(out$DICs)
+
+## Run single version of BaSTA with the best model/shape/covariate structure (this was GO Makeham in our case)
+outbest <- basta(dfnew, studyStart = 1, studyEnd = max(dfnew$death), updateJumps = TRUE, parallel = TRUE, ncpus = 8, nsim = 4, niter = 150000, burnin = 15001, thinning = 150, shape = "Makeham", model = "GO") ##ran fine and survival parameters converged appropriately
+
+## Print results: 
+summary(outbest, digits = 3) 
+os<-as.data.frame(outbest$coefficients) 
+os2<-rownames_to_column(os, var = "Parameter") %>% as_tibble() 
+gt(os2) %>% fmt_number(columns = 2:8, decimals = 3)  ##serial autocorrelation values were too high, so sequentially tried increasing the number of iterations, burn-in and thinning values until serial autocorrelation values were below 5%
+
+##best model
+outbest5 <- basta(dfnew, studyStart = 1, studyEnd = max(dfnew$death), updateJumps = TRUE, parallel = TRUE, ncpus = 8, nsim = 4, niter = 1000000, burnin = 100001, thinning = 1000, shape = "Makeham", model = "GO") ##ran fine and survival parameters converged appropriately
+save(outbest5, file="model5rerun.Rdata")
+
+##Print results: 
+summary(outbest5, digits = 3)  ###ran in 3.5h and all ser. autocorrelation values now below 5% so stick with this model
+
+##Plot traces for survival parameters, to visually verify that all parameter estimates have reached convergence
+plot(outbest5)
+
+##Plot survival and mortality curves:
+plot(outbest5, plot.trace = FALSE, xlim = c(0,50), noCI = FALSE, fancy = T, col = c("red","pink2","blue","#984EA3"), cex=2, names.legend= c("ev", "ev + virus", "daf-2 RNAi", "daf-2 RNAi + virus")) 
+
+##Plot KLDC values
+library(cowplot)
+library(stringr)
+pl5<- KLDC5 %>% ggplot(aes(x = Treatment_Comparisons, y = KLDC_values, colour = Parameter)) + 
+  geom_point(size = 5) + 
+  geom_hline(yintercept = 0.85, linetype=2) + 
+  scale_x_discrete(limits=c("ev_virus-ev_novirus","daf.2_virus-daf.2_novirus","daf.2_novirus-ev_novirus","daf.2_virus-ev_virus"),labels=c("ev_virus-ev_novirus"="ev + virus vs ev","daf.2_virus-daf.2_novirus"="daf-2 RNAi + virus vs daf-2 RNAi","daf.2_novirus-ev_novirus"="daf-2 RNAi vs ev","daf.2_virus-ev_virus"="daf-2 RNAi + virus vs ev + virus"))+
+  xlab("Treatment Comparisons")+
+  ylab("KLDC values")+
+  labs(colour="Parameter")+
+  theme(axis.text = element_text(size=20),axis.title=element_text(size=22))+
+  theme_cowplot()
+pl5
+
+####################
+####################
+
+##Age-specific reproduction analysis with glmmTMB
+###Load in packages
+library(lme4) ##for glmer
+library(lmerTest) ##anova & summary tables for fixed & random effects, for model simplification
+library(car) ##anova tables, plots for applied regression
+library(blmeco) ##functions accompanying book "Bayesian data analysis in ecology using R, BUGS & Stan"
+library(popbio) ##construction & analysis of matrix popoulation models e.g. for lambda
+library(XLConnect) ##Excel connector for modifying and querying Excel file (error produced)
+library(glmmTMB) ##glmm using template model builder; incl more families, zero infl, nested or crossed rand effects, "dispersion model" for fixed effects
+library(DHARMa) ##residual diagnostics for hierarchical (multi-level/mixed) regression models; incl dispersion test and zero inflation test for glmmTMB
+library(bbmle) ##for AICtab
+library(ggplot2)
+library(ggpubr) # to pt together multiple graphs in one
+library(gridExtra) #to pt together multiple graphs in one
+library(cowplot)
+library(grid)
+###Set working directory and load in data
+
+##Generalised Poisson
+rgm1<-glmmTMB(Off.count~Strain*Virus.inf*Day+Strain*Virus.inf*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),family='genpois',data=JUcomborepr)
+summary(rgm1) #remove three-way with day
+rgm2<-glmmTMB(Off.count~Strain*Day+Virus.inf*Day+Strain*Virus.inf*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),family='genpois',data=JUcomborepr)
+summary(rgm2) ##remove other 3-way
+rgm3<-glmmTMB(Off.count~Strain*Day+Virus.inf*Day+Strain*Virus.inf+Strain*I(Day^2)+Virus.inf*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),family='genpois',data=JUcomborepr)
+summary(rgm3) ##remove Virus.inf1:I(Day^2)
+rgm4<-glmmTMB(Off.count~Strain*Day+Virus.inf*Day+Strain*Virus.inf+Strain*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),family='genpois',data=JUcomborepr)
+summary(rgm4) ##remove strain*virus
+rgm5<-glmmTMB(Off.count~Strain*Day+Virus.inf*Day+Strain*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),family='genpois',data=JUcomborepr)
+summary(rgm5)
+AICtab(rgm1,rgm2,rgm3,rgm4,rgm5) ##model 5 is the best
+
+##Zero-inflated Generalised Poisson
+rgzm1<-glmmTMB(Off.count~Strain*Virus.inf*Day+Strain*Virus.inf*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),zi=~Day+I(Day^2),family='genpois',data=JUcomborepr) ##ran fine
+summary(rgzm1) ##both day and day2 explain the zero-inflation; take out the 3-way with Day
+rgzm2<-glmmTMB(Off.count~Strain*Day+Virus.inf*Day+Strain*Virus.inf*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),zi=~Day+I(Day^2),family='genpois',data=JUcomborepr) 
+summary(rgzm2) ##take out other 3 way
+rgzm3<-glmmTMB(Off.count~Strain*Day+Virus.inf*Day+Strain*Virus.inf+Virus.inf*I(Day^2)+Strain*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),zi=~Day+I(Day^2),family='genpois',data=JUcomborepr) 
+summary(rgzm3) ##take out Virus.inf1:I(Day^2)
+rgzm4<-glmmTMB(Off.count~Strain*Day+Virus.inf*Day+Strain*Virus.inf+Strain*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),zi=~Day+I(Day^2),family='genpois',data=JUcomborepr) 
+summary(rgzm4) ##take out strain x virus
+rgzm5<-glmmTMB(Off.count~Strain*Day+Virus.inf*Day+Strain*I(Day^2)+(1|NewPlateId)+(1|Block)+(1|Experimenter),zi=~Day+I(Day^2),family='genpois',data=JUcomborepr) ##convergence problem so keep strain x virus in 
+
+##compare all models
+AICtab(rgm1,rgm2,rgm3,rgm4,rgm5,rgzm1,rgzm2,rgzm3,rgzm4) ##the zero inflated models are the best with the final model being the best
+
+###############
+###############
+
+##Total reproduction analysis
+model3.totalrep<-lmer(totrep~Strain*Virus.inf+(1|Block),data=totrepcombo)
+summary(model3.totalrep)
+
+##############
+##############
+
+###Anti-viral gene expression analysis
+
+##load packages
+library(ggplot2)
+library(forcats) ##to reorder factors
+
+##set working directory and load in data
+##check for normality of normalised gene expression ("norm") using shapiro.test
+
+##use Wilcoxon rank sum exact test (Mann-whitney U test) for comparing 2 independent non-normally distributed samples with wilcox.test
+
+##Now analyse drh-1 and cde-1 expression separately in a combined model that includes Day x Virus x RNAi
+
+##subset by gene
+cdenorm<-subset(normvirusnoORV,Gene=="cde-1")
+drhnorm<-subset(normvirusnoORV,Gene=="drh-1")
+
+##analysis for cde-1 (same done for drh-1 normalised gene expression)
+Model1<-glm(Norm~Day*Virus*RNAi,family=gaussian,data=cdenorm)
+summary(Model1)
+Model2<-glm(Norm~Day*Virus+Day*RNAi+RNAi*Virus,family = gaussian, data = cdenorm)##took out three-way interaction
+summary(Model2)
+Model3<-glm(Norm~Day*RNAi+RNAi*Virus,family = gaussian, data = cdenorm)##took out two-way Day x Virus interaction
+summary(Model3)
+Model4<-glm(Norm~Day*RNAi+Virus,family = gaussian, data = cdenorm)##took out two-way RNAi x virus interaction
+summary(Model4)
+##now subset just the ev data in cdenorm
+evcdenorm<-subset(cdenorm,RNAi=="ev")
+summary(evcdenorm)
+Model100<-glm(Norm~Virus*Day, family = gaussian, data=evcdenorm)
+summary(Model100)
+Model101<-glm(Norm~Virus+Day, family = gaussian, data=evcdenorm)
+summary(Model101)
+
+############
+############
+
+###Viral load analysis
+
+##Models containing non-virus infected samples did not converge, so this data was analysed separately with wilcox.test
+
+##Generalised linear model with Tweedie distribution to analyse zero-inflated viral load (normalised virus gene expression, "Norm") of virally-infected samples
+
+##load packages
+library(bbmle)
+library(lme4)
+library(statmod)
+library(tweedie)
+
+##estimating the Tweedie index parameter
+plot(Norm~Treatment,data=normvirusload)
+out<-tweedie.profile(Norm~Treatment, do.plot=TRUE, data=normvirusload)
+names(out)
+xi.est<-out$xi.max
+c("MLE of xi" = xi.est, "CI for xi" = out$ci) ##gave MLE of xi as 1.8
+
+##run the Tweedie GLM
+Model22<-glm(Norm~Day*RNAi,data=virusdata, family = statmod::tweedie(var.power = 1.8, link.power = 0) )
+summary(Model22)
+AICtweedie(Model22, dispersion = 4.145002)
+Model23<-glm(Norm~Day+RNAi,data=virusdata, family = statmod::tweedie(var.power = 1.8, link.power = 0) )
+summary(Model23)
+AICtweedie(Model23, dispersion = 4.48803)
