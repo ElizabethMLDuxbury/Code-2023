@@ -1,4 +1,4 @@
-#Code for analyses in Duxbury et al. 2023 manuscript enititled "Reduced insulin/IGF-1 signalling upregulates two anti-viral immune pathways, decreases viral load and increases survival under viral infection in C. elegans"
+#Code for analyses in Duxbury et al. 2024 paper entitled "Reduced insulin/IGF-1 signalling upregulates two anti-viral immune pathways, decreases viral load and increases survival under viral infection in C. elegans"
 
 ##Age-specific survival analyses
 ###Load in packages
